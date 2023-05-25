@@ -26,6 +26,7 @@
   "is_virtual",
   "queue_in_background",
   "fields_section_break",
+  "try_form_builder_html",
   "fields",
   "sb1",
   "naming_rule",
@@ -189,6 +190,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "fieldname": "beta",
    "fieldtype": "Check",
    "label": "Beta"
@@ -265,7 +267,7 @@
    "default": "0",
    "fieldname": "hide_toolbar",
    "fieldtype": "Check",
-   "label": "Hide Sidebar and Menu",
+   "label": "Hide Sidebar, Menu, and Comments",
    "oldfieldname": "hide_toolbar",
    "oldfieldtype": "Check"
   },
@@ -463,6 +465,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "description": "Tree structures are implemented using Nested Set",
    "fieldname": "is_tree",
    "fieldtype": "Check",
@@ -539,6 +542,7 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "fieldname": "is_virtual",
    "fieldtype": "Check",
    "label": "Is Virtual"
@@ -604,6 +608,7 @@
   {
    "default": "0",
    "depends_on": "eval: doc.is_submittable",
+   "description": "Enabling this will submit documents in background",
    "fieldname": "queue_in_background",
    "fieldtype": "Check",
    "label": "Queue in Background"
@@ -621,10 +626,16 @@
   },
   {
    "default": "0",
+   "depends_on": "eval:!doc.istable",
    "description": "Enables Calendar and Gantt views.",
    "fieldname": "is_calendar_and_gantt",
    "fieldtype": "Check",
    "label": "Is Calendar and Gantt"
+  },
+  {
+   "fieldname": "try_form_builder_html",
+   "fieldtype": "HTML",
+   "label": "Try Form Builder HTML"
   }
  ],
  "icon": "fa fa-bolt",
@@ -707,7 +718,7 @@
    "link_fieldname": "reference_doctype"
   }
  ],
- "modified": "2022-10-12 14:13:27.315351",
+ "modified": "2023-05-15 14:07:51.526257",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "DocType",

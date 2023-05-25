@@ -191,9 +191,22 @@ def get_context(context):
 
 		self.add_custom_context_and_script(context)
 		self.load_translations(context)
+		self.add_metatags(context)
 
 		context.boot = get_boot_data()
 		context.boot["link_title_doctypes"] = frappe.boot.get_link_title_doctypes()
+
+	def add_metatags(self, context):
+		description = self.meta_description
+
+		if not description and self.introduction_text:
+			description = self.introduction_text[:140]
+
+		context.metatags = {
+			"name": self.meta_title or self.title,
+			"description": description,
+			"image": self.meta_image,
+		}
 
 	def load_translations(self, context):
 		translated_messages = frappe.translate.get_dict("doctype", self.doc_type)
@@ -374,6 +387,10 @@ def accept(web_form, data):
 
 	web_form = frappe.get_doc("Web Form", web_form)
 	doctype = web_form.doc_type
+	user = frappe.session.user
+
+	if web_form.anonymous and frappe.session.user != "Guest":
+		frappe.session.user = "Guest"
 
 	if data.name and not web_form.allow_edit:
 		frappe.throw(_("You are not allowed to update this Web Form Document"))
@@ -454,6 +471,9 @@ def accept(web_form, data):
 		for f in files_to_delete:
 			if f:
 				remove_file_by_url(f, doctype=doctype, name=doc.name)
+
+	if web_form.anonymous and frappe.session.user == "Guest" and user:
+		frappe.session.user = user
 
 	frappe.flags.web_form_doc = doc
 	return doc

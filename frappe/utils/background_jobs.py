@@ -9,6 +9,7 @@ from uuid import uuid4
 import redis
 from redis.exceptions import BusyLoadingError, ConnectionError
 from rq import Connection, Queue, Worker
+from rq.exceptions import NoSuchJobError
 from rq.logutils import setup_loghandlers
 from rq.worker import RandomWorker, RoundRobinWorker
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -18,6 +19,7 @@ import frappe.monitor
 from frappe import _
 from frappe.utils import cstr, get_bench_id
 from frappe.utils.commands import log
+from frappe.utils.deprecations import deprecation_warning
 from frappe.utils.redis_queue import RedisQueue
 
 if TYPE_CHECKING:
@@ -64,6 +66,7 @@ def enqueue(
 	enqueue_after_commit=False,
 	*,
 	at_front=False,
+	job_id=None,
 	**kwargs,
 ) -> Union["Job", Any]:
 	"""
@@ -74,18 +77,24 @@ def enqueue(
 	:param timeout: should be set according to the functions
 	:param event: this is passed to enable clearing of jobs from queues
 	:param is_async: if is_async=False, the method is executed immediately, else via a worker
-	:param job_name: can be used to name an enqueue call, which can be used to prevent duplicate calls
+	:param job_name: [DEPRECATED] can be used to name an enqueue call, which can be used to prevent duplicate calls
 	:param now: if now=True, the method is executed via frappe.call
 	:param kwargs: keyword arguments to be passed to the method
+	:param job_id: Assigning unique job id, which can be checked using `is_job_enqueued`
 	"""
 	# To handle older implementations
 	is_async = kwargs.pop("async", is_async)
 
+	if job_id:
+		# namespace job ids to sites
+		job_id = create_job_id(job_id)
+
+	if job_name:
+		deprecation_warning("Using enqueue with `job_name` is deprecated, use `job_id` instead.")
+
 	if not is_async and not frappe.flags.in_test:
-		print(
-			_(
-				"Using enqueue with is_async=False outside of tests is not recommended, use now=True instead."
-			)
+		deprecation_warning(
+			"Using enqueue with is_async=False outside of tests is not recommended, use now=True instead."
 		)
 
 	call_directly = now or (not is_async and not frappe.flags.in_test)
@@ -95,9 +104,12 @@ def enqueue(
 	try:
 		q = get_queue(queue, is_async=is_async)
 	except ConnectionError:
-		# If redis is not available for queueing execute the job directly
-		print(f"Redis queue is unreachable: Executing {method} synchronously")
-		return frappe.call(method, **kwargs)
+		if frappe.local.flags.in_migrate:
+			# If redis is not available during migration, execute the job directly
+			print(f"Redis queue is unreachable: Executing {method} synchronously")
+			return frappe.call(method, **kwargs)
+
+		raise
 
 	if not timeout:
 		timeout = get_queues_timeout().get(queue) or 300
@@ -115,7 +127,13 @@ def enqueue(
 			frappe.flags.enqueue_after_commit = []
 
 		frappe.flags.enqueue_after_commit.append(
-			{"queue": queue, "is_async": is_async, "timeout": timeout, "queue_args": queue_args}
+			{
+				"queue": queue,
+				"is_async": is_async,
+				"timeout": timeout,
+				"queue_args": queue_args,
+				"job_id": job_id,
+			}
 		)
 		return frappe.flags.enqueue_after_commit
 
@@ -126,8 +144,9 @@ def enqueue(
 		timeout=timeout,
 		kwargs=queue_args,
 		at_front=at_front,
-		failure_ttl=RQ_JOB_FAILURE_TTL,
-		result_ttl=RQ_RESULTS_TTL,
+		failure_ttl=frappe.conf.get("rq_job_failure_ttl") or RQ_JOB_FAILURE_TTL,
+		result_ttl=frappe.conf.get("rq_results_ttl") or RQ_RESULTS_TTL,
+		job_id=job_id,
 	)
 
 
@@ -153,6 +172,7 @@ def run_doc_method(doctype, name, doc_method, **kwargs):
 
 def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True, retry=0):
 	"""Executes job in a worker, performs commit/rollback and logs if there is any error"""
+	retval = None
 	if is_async:
 		frappe.connect(site)
 		if os.environ.get("CI"):
@@ -167,9 +187,11 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
 	else:
 		method_name = cstr(method.__name__)
 
-	frappe.monitor.start("job", method_name, kwargs)
+	for before_job_task in frappe.get_hooks("before_job"):
+		frappe.call(before_job_task, method=method_name, kwargs=kwargs, transaction_type="job")
+
 	try:
-		method(**kwargs)
+		retval = method(**kwargs)
 
 	except (frappe.db.InternalError, frappe.RetryBackgroundJobError) as e:
 		frappe.db.rollback()
@@ -200,14 +222,12 @@ def execute_job(site, method, event, job_name, kwargs, user=None, is_async=True,
 
 	else:
 		frappe.db.commit()
+		return retval
 
 	finally:
-		# background job hygiene: release file locks if unreleased
-		# if this breaks something, move it to failed jobs alone - gavin@frappe.io
-		for doc in frappe.local.locked_documents:
-			doc.unlock()
+		for after_job_task in frappe.get_hooks("after_job"):
+			frappe.call(after_job_task, method=method_name, kwargs=kwargs, result=retval)
 
-		frappe.monitor.stop()
 		if is_async:
 			frappe.destroy()
 
@@ -219,7 +239,7 @@ def start_worker(
 	rq_password: str | None = None,
 	burst: bool = False,
 	strategy: Literal["round_robin", "random"] | None = None,
-) -> NoReturn | None:
+) -> NoReturn | None:  # pragma: no cover
 	"""Wrapper to start rq worker. Connects to redis and monitors these queues."""
 	DEQUEUE_STRATEGIES = {"round_robin": RoundRobinWorker, "random": RandomWorker}
 
@@ -242,7 +262,12 @@ def start_worker(
 		if quiet:
 			logging_level = "WARNING"
 		worker = WorkerKlass(queues, name=get_worker_name(queue_name))
-		worker.work(logging_level=logging_level, burst=burst)
+		worker.work(
+			logging_level=logging_level,
+			burst=burst,
+			date_format="%Y-%m-%d %H:%M:%S",
+			log_format="%(asctime)s,%(msecs)03d %(message)s",
+		)
 
 
 def get_worker_name(queue):
@@ -407,12 +432,17 @@ def test_job(s):
 	time.sleep(s)
 
 
-def is_job_queued(job_name: str) -> bool:
-	for queue in get_queues():
-		for job_id in queue.get_job_ids():
-			if not job_id:
-				continue
-			job = queue.fetch_job(job_id)
-			if job.kwargs.get("job_name") == job_name and job.kwargs.get("site") == frappe.local.site:
-				return True
-	return False
+def create_job_id(job_id: str) -> str:
+	"""Generate unique job id for deduplication"""
+	return f"{frappe.local.site}::{job_id}"
+
+
+def is_job_enqueued(job_id: str) -> str:
+	from rq.job import Job
+
+	try:
+		job = Job.fetch(create_job_id(job_id), connection=get_redis_conn())
+	except NoSuchJobError:
+		return False
+
+	return job.get_status() in ("queued", "started")

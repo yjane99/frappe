@@ -30,14 +30,11 @@ $.extend(frappe.perm, {
 		"print",
 		"email",
 		"share",
-		"set_user_permissions",
 	],
 
 	doctype_perm: {},
 
-	has_perm: (doctype, permlevel, ptype, doc) => {
-		if (!permlevel) permlevel = 0;
-
+	has_perm: (doctype, permlevel = 0, ptype = "read", doc) => {
 		const perms = frappe.perm.get_perm(doctype, doc);
 		return !!perms?.[permlevel]?.[ptype];
 	},
@@ -195,7 +192,9 @@ $.extend(frappe.perm, {
 		}
 
 		if (!perm) {
-			return df && (cint(df.hidden) || cint(df.hidden_due_to_dependency)) ? "None" : "Write";
+			let is_hidden = df && (cint(df.hidden) || cint(df.hidden_due_to_dependency));
+			let is_read_only = df && cint(df.read_only);
+			return is_hidden ? "None" : is_read_only ? "Read" : "Write";
 		}
 
 		if (!df.permlevel) df.permlevel = 0;
@@ -289,10 +288,9 @@ $.extend(frappe.perm, {
 		const allowed_docs = filtered_perms.map((perm) => perm.doc);
 
 		if (with_default_doc) {
-			const default_doc =
-				allowed_docs.length === 1
-					? allowed_docs
-					: filtered_perms.filter((perm) => perm.is_default).map((record) => record.doc);
+			const default_doc = filtered_perms
+				.filter((perm) => perm.is_default)
+				.map((record) => record.doc);
 
 			return {
 				allowed_records: allowed_docs,

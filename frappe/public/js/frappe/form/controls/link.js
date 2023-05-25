@@ -90,7 +90,7 @@ frappe.ui.form.ControlLink = class ControlLink extends frappe.ui.form.ControlDat
 		return in_list(frappe.boot?.translated_doctypes || [], this.get_options());
 	}
 	is_title_link() {
-		return in_list(frappe.boot.link_title_doctypes, this.get_options());
+		return in_list(frappe.boot?.link_title_doctypes || [], this.get_options());
 	}
 	async set_link_title(value) {
 		const doctype = this.get_options();
@@ -475,7 +475,7 @@ frappe.ui.form.ControlLink = class ControlLink extends frappe.ui.form.ControlDat
 
 			let value = filter[3] == null || filter[3] === "" ? __("empty") : String(filter[3]);
 
-			return [__(label).bold(), filter[2], value.bold()].join(" ");
+			return [__(label).bold(), __(filter[2]), value.bold()].join(" ");
 		}
 
 		let filter_string = filter_array.map(get_filter_description).join(", ");

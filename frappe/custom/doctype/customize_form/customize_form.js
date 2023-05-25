@@ -89,7 +89,7 @@ frappe.ui.form.on("Customize Form", {
 
 	setup_sortable: function (frm) {
 		frm.doc.fields.forEach(function (f) {
-			if (!f.is_custom_field) {
+			if (!f.is_custom_field || f.is_system_generated) {
 				f._sortable = false;
 			}
 
@@ -111,54 +111,52 @@ frappe.ui.form.on("Customize Form", {
 		frm.page.clear_icons();
 
 		if (frm.doc.doc_type) {
-			frm.page.set_title(__("Customize Form - {0}", [frm.doc.doc_type]));
-			frappe.customize_form.set_primary_action(frm);
+			frappe.model.with_doctype(frm.doc.doc_type).then(() => {
+				frm.page.set_title(__("Customize Form - {0}", [frm.doc.doc_type]));
+				frappe.customize_form.set_primary_action(frm);
 
-			if (!frm.is_new()) {
-				frm.add_custom_button(__("Try new form builder", [__(frm.doc.doc_type)]), () => {
-					frappe.set_route("form-builder", frm.doc.doc_type, "customize");
-				});
-			}
+				render_form_builder_message(frm);
 
-			frm.add_custom_button(
-				__("Go to {0} List", [__(frm.doc.doc_type)]),
-				function () {
-					frappe.set_route("List", frm.doc.doc_type);
-				},
-				__("Actions")
-			);
+				frm.add_custom_button(
+					__("Go to {0} List", [__(frm.doc.doc_type)]),
+					function () {
+						frappe.set_route("List", frm.doc.doc_type);
+					},
+					__("Actions")
+				);
 
-			frm.add_custom_button(
-				__("Reload"),
-				function () {
-					frm.script_manager.trigger("doc_type");
-				},
-				__("Actions")
-			);
+				frm.add_custom_button(
+					__("Reload"),
+					function () {
+						frm.script_manager.trigger("doc_type");
+					},
+					__("Actions")
+				);
 
-			frm.add_custom_button(
-				__("Reset to defaults"),
-				function () {
-					frappe.customize_form.confirm(__("Remove all customizations?"), frm);
-				},
-				__("Actions")
-			);
+				frm.add_custom_button(
+					__("Reset to defaults"),
+					function () {
+						frappe.customize_form.confirm(__("Remove all customizations?"), frm);
+					},
+					__("Actions")
+				);
 
-			frm.add_custom_button(
-				__("Set Permissions"),
-				function () {
-					frappe.set_route("permission-manager", frm.doc.doc_type);
-				},
-				__("Actions")
-			);
+				frm.add_custom_button(
+					__("Set Permissions"),
+					function () {
+						frappe.set_route("permission-manager", frm.doc.doc_type);
+					},
+					__("Actions")
+				);
 
-			const is_autoname_autoincrement = frm.doc.autoname === "autoincrement";
-			frm.set_df_property("naming_rule", "hidden", is_autoname_autoincrement);
-			frm.set_df_property("autoname", "read_only", is_autoname_autoincrement);
-			frm.toggle_display(
-				["queue_in_background"],
-				frappe.get_meta(frm.doc.doc_type).is_submittable || 0
-			);
+				const is_autoname_autoincrement = frm.doc.autoname === "autoincrement";
+				frm.set_df_property("naming_rule", "hidden", is_autoname_autoincrement);
+				frm.set_df_property("autoname", "read_only", is_autoname_autoincrement);
+				frm.toggle_display(
+					["queue_in_background"],
+					frappe.get_meta(frm.doc.doc_type).is_submittable || 0
+				);
+			});
 		}
 
 		frm.events.setup_export(frm);
@@ -246,10 +244,23 @@ frappe.ui.form.on("Customize Form", {
 // can't delete standard fields
 frappe.ui.form.on("Customize Form Field", {
 	before_fields_remove: function (frm, doctype, name) {
-		var row = frappe.get_doc(doctype, name);
+		const row = frappe.get_doc(doctype, name);
+
+		if (row.is_system_generated) {
+			frappe.throw(
+				__(
+					"Cannot delete system generated field <strong>{0}</strong>. You can hide it instead.",
+					[__(row.label) || row.fieldname]
+				)
+			);
+		}
+
 		if (!(row.is_custom_field || row.__islocal)) {
-			frappe.msgprint(__("Cannot delete standard field. You can hide it if you want"));
-			throw "cannot delete standard field";
+			frappe.throw(
+				__("Cannot delete standard field <strong>{0}</strong>. You can hide it instead.", [
+					__(row.label) || row.fieldname,
+				])
+			);
 		}
 	},
 	fields_add: function (frm, cdt, cdn) {
@@ -257,6 +268,10 @@ frappe.ui.form.on("Customize Form Field", {
 		f.is_system_generated = false;
 		f.is_custom_field = true;
 		frm.trigger("setup_default_views");
+	},
+
+	form_render(frm, doctype, docname) {
+		frm.trigger("setup_fetch_from_fields", doctype, docname);
 	},
 });
 
@@ -305,22 +320,59 @@ frappe.ui.form.on("DocType State", {
 	},
 });
 
-frappe.customize_form.set_primary_action = function (frm) {
-	frm.page.set_primary_action(__("Update"), function () {
-		if (frm.doc.doc_type) {
-			return frm.call({
-				doc: frm.doc,
-				freeze: true,
-				btn: frm.page.btn_primary,
-				method: "save_customization",
-				callback: function (r) {
-					if (!r.exc) {
-						frappe.customize_form.clear_locals_and_refresh(frm);
-						frm.script_manager.trigger("doc_type");
-					}
-				},
-			});
+frappe.customize_form.validate_fieldnames = async function (frm) {
+	for (let i = 0; i < frm.doc.fields.length; i++) {
+		let field = frm.doc.fields[i];
+
+		let fieldname = field.label && frappe.model.scrub(field.label).toLowerCase();
+		if (
+			field.label &&
+			!field.fieldname &&
+			in_list(frappe.model.restricted_fields, fieldname)
+		) {
+			let message = __(
+				"For field <b>{0}</b> in row <b>{1}</b>, fieldname <b>{2}</b> is restricted it will be renamed as <b>{2}1</b>. Do you want to continue?",
+				[field.label, field.idx, fieldname]
+			);
+			await pause_to_confirm(message);
 		}
+	}
+
+	function pause_to_confirm(message) {
+		return new Promise((resolve) => {
+			frappe.confirm(
+				message,
+				() => resolve(),
+				() => {
+					frm.page.btn_primary.prop("disabled", false);
+				}
+			);
+		});
+	}
+};
+
+frappe.customize_form.save_customization = function (frm) {
+	if (frm.doc.doc_type) {
+		return frm.call({
+			doc: frm.doc,
+			freeze: true,
+			freeze_message: __("Saving Customization..."),
+			btn: frm.page.btn_primary,
+			method: "save_customization",
+			callback: function (r) {
+				if (!r.exc) {
+					frappe.customize_form.clear_locals_and_refresh(frm);
+					frm.script_manager.trigger("doc_type");
+				}
+			},
+		});
+	}
+};
+
+frappe.customize_form.set_primary_action = function (frm) {
+	frm.page.set_primary_action(__("Update"), async () => {
+		await this.validate_fieldnames(frm);
+		this.save_customization(frm);
 	});
 };
 
@@ -366,5 +418,32 @@ frappe.customize_form.clear_locals_and_refresh = function (frm) {
 	delete frappe.meta.docfield_copy[frm.doc.doc_type];
 	frm.refresh();
 };
+
+function render_form_builder_message(frm) {
+	$(frm.fields_dict["try_form_builder_html"].wrapper).empty();
+	if (!frm.is_new() && frm.fields_dict["try_form_builder_html"]) {
+		let title = __("Use Form Builder to visually customize your form layout");
+		let msg = __(
+			"You can drag and drop fields to create your form layout, add tabs, sections and columns to organize your form and update field properties all from one screen."
+		);
+
+		let message = `
+		<div class="flex form-message blue p-3">
+			<div class="mr-3"><img style="border-radius: var(--border-radius-md)" width="275" src="/assets/frappe/images/form-builder.gif"></div>
+			<div>
+				<p style="font-size: var(--text-lg)">${title}</p>
+				<p>${msg}</p>
+				<div>
+					<a class="btn btn-primary btn-sm" href="/app/form-builder/${frm.doc.doc_type}/customize">
+						${__("Form Builder")} ${frappe.utils.icon("right", "xs")}
+					</a>
+				</div>
+			</div>
+		</div>
+		`;
+
+		$(frm.fields_dict["try_form_builder_html"].wrapper).html(message);
+	}
+}
 
 extend_cscript(cur_frm.cscript, new frappe.model.DocTypeController({ frm: cur_frm }));

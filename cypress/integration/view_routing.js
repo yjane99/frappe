@@ -103,8 +103,9 @@ context("View", () => {
 	});
 
 	it("Route to File View", () => {
+		cy.intercept("POST", "/api/method/frappe.desk.reportview.get").as("list_loaded");
 		cy.visit("app/file");
-		cy.wait(500);
+		cy.wait("@list_loaded");
 		cy.window()
 			.its("cur_list")
 			.then((list) => {
@@ -113,7 +114,7 @@ context("View", () => {
 			});
 
 		cy.visit("app/file/view/home/Attachments");
-		cy.wait(500);
+		cy.wait("@list_loaded");
 		cy.window()
 			.its("cur_list")
 			.then((list) => {
@@ -214,14 +215,13 @@ context("View", () => {
 	});
 
 	it("Route to Form", () => {
-		cy.call("frappe.tests.ui_test_helpers.create_note").then(() => {
-			cy.visit("/app/note/Routing Test");
-			cy.window()
-				.its("cur_frm")
-				.then((frm) => {
-					expect(frm.doc.title).to.equal("Routing Test");
-				});
-		});
+		const test_user = cy.config("testUser");
+		cy.visit(`/app/user/${test_user}`);
+		cy.window()
+			.its("cur_frm")
+			.then((frm) => {
+				expect(frm.doc.name).to.equal(test_user);
+			});
 	});
 
 	it("Route to Settings Workspace", () => {

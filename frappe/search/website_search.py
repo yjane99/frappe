@@ -9,7 +9,6 @@ from whoosh.fields import ID, TEXT, Schema
 import frappe
 from frappe.search.full_text_search import FullTextSearch
 from frappe.utils import set_request, update_progress_bar
-from frappe.utils.synchronization import filelock
 from frappe.website.serve import get_response_content
 
 INDEX_NAME = "web_routes"
@@ -124,7 +123,7 @@ def get_static_pages_from_all_apps():
 		files_to_index = glob(path_to_index + "/**/*.html", recursive=True)
 		files_to_index.extend(glob(path_to_index + "/**/*.md", recursive=True))
 		for file in files_to_index:
-			route = os.path.relpath(file, path_to_index).split(".")[0]
+			route = os.path.relpath(file, path_to_index).split(".", maxsplit=1)[0]
 			if route.endswith("index"):
 				route = route.rsplit("index", 1)[0]
 			routes_to_index.append(route)
@@ -141,7 +140,9 @@ def remove_document_from_index(path):
 	return ws.remove_document_from_index(path)
 
 
-@filelock("building_website_search")
 def build_index_for_all_routes():
-	ws = WebsiteSearch(INDEX_NAME)
-	return ws.build()
+	from frappe.utils.synchronization import filelock
+
+	with filelock("building_website_search"):
+		ws = WebsiteSearch(INDEX_NAME)
+		return ws.build()

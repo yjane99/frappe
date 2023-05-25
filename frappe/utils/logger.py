@@ -1,7 +1,11 @@
 # imports - standard imports
 import logging
 import os
+import sys
+from contextlib import contextmanager
+from copy import deepcopy
 from logging.handlers import RotatingFileHandler
+from typing import Literal
 
 # imports - module imports
 import frappe
@@ -90,12 +94,60 @@ class SiteContextFilter(logging.Filter):
 	def filter(self, record) -> bool:
 		if "Form Dict" not in str(record.msg):
 			site = getattr(frappe.local, "site", None)
-			form_dict = getattr(frappe.local, "form_dict", None)
+			form_dict = sanitized_dict(getattr(frappe.local, "form_dict", None))
 			record.msg = str(record.msg) + f"\nSite: {site}\nForm Dict: {form_dict}"
 			return True
 
 
-def set_log_level(level: int) -> None:
+def set_log_level(level: Literal["ERROR", "WARNING", "WARN", "INFO", "DEBUG"]) -> None:
 	"""Use this method to set log level to something other than the default DEBUG"""
 	frappe.log_level = getattr(logging, (level or "").upper(), None) or default_log_level
 	frappe.loggers = {}
+
+
+def sanitized_dict(form_dict):
+	if not isinstance(form_dict, dict):
+		return form_dict
+
+	sanitized_dict = deepcopy(form_dict)
+
+	blocklist = [
+		"password",
+		"passwd",
+		"secret",
+		"token",
+		"key",
+		"pwd",
+	]
+
+	for k in sanitized_dict:
+		for secret_kw in blocklist:
+			if secret_kw in k:
+				sanitized_dict[k] = "********"
+	return sanitized_dict
+
+
+@contextmanager
+def pipe_to_log(logger_fn, stream=None):
+	"Pass an existing logger function e.g. logger.info. Stream defaults to stdout"
+	# late bind source
+	if stream is None:
+		stream = sys.stdout
+
+	stream_int = stream.fileno()
+	r_int, w_int = os.pipe()
+
+	# copy stream_fd before it is overwritten
+	with os.fdopen(os.dup(stream_int), "wb") as copied:
+		stream.flush()
+		os.dup2(w_int, stream_int)  # $ exec >&pipe
+		try:
+			with os.fdopen(w_int, "wb"):
+				yield stream
+		finally:
+			# restore stream to its previous value
+			stream.flush()
+			os.dup2(copied.fileno(), stream_int)  # $ exec >&copied
+			with os.fdopen(r_int, newline="") as r:
+				text = r.read()
+			logger_fn(text)

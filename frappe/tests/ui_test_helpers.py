@@ -77,9 +77,11 @@ def create_todo_records():
 
 
 @whitelist_for_tests
-def clear_notes():
+def prepare_webform_test():
 	for note in frappe.get_all("Note", pluck="name"):
 		frappe.delete_doc("Note", note, force=True)
+
+	frappe.delete_doc_if_exists("Web Form", "note")
 
 
 @whitelist_for_tests
@@ -426,12 +428,15 @@ def create_blog_post():
 	return doc
 
 
-def create_test_user():
-	if frappe.db.exists("User", UI_TEST_USER):
+@whitelist_for_tests
+def create_test_user(username=None):
+	name = username or UI_TEST_USER
+
+	if frappe.db.exists("User", name):
 		return
 
 	user = frappe.new_doc("User")
-	user.email = UI_TEST_USER
+	user.email = name
 	user.first_name = "Frappe"
 	user.new_password = frappe.local.conf.admin_password
 	user.send_welcome_email = 0
@@ -495,7 +500,7 @@ def setup_image_doctype():
 
 @whitelist_for_tests
 def setup_inbox():
-	frappe.db.sql("DELETE FROM `tabUser Email`")
+	frappe.db.delete("User Email")
 
 	user = frappe.get_doc("User", frappe.session.user)
 	user.append("user_emails", {"email_account": "Email Linking"})
@@ -534,12 +539,6 @@ def setup_default_view(view, force_reroute=None):
 
 
 @whitelist_for_tests
-def create_note():
-	if not frappe.db.exists("Note", "Routing Test"):
-		frappe.get_doc({"doctype": "Note", "title": "Routing Test"}).insert()
-
-
-@whitelist_for_tests
 def create_kanban():
 	if not frappe.db.exists("Custom Field", "Note-kanban"):
 		frappe.get_doc(
@@ -564,6 +563,40 @@ def create_kanban():
 				"reference_doctype": "Note",
 				"field_name": "kanban",
 				"private": 1,
+				"show_labels": 0,
+				"columns": [
+					{
+						"column_name": "Open",
+						"status": "Active",
+						"indicator": "Gray",
+					},
+					{
+						"column_name": "Closed",
+						"status": "Active",
+						"indicator": "Gray",
+					},
+				],
+			}
+		).insert()
+
+
+@whitelist_for_tests
+def create_todo(description):
+	frappe.get_doc({"doctype": "ToDo", "description": description}).insert()
+
+
+@whitelist_for_tests
+def create_admin_kanban():
+	if not frappe.db.exists("Kanban Board", "Admin Kanban"):
+		frappe.get_doc(
+			{
+				"doctype": "Kanban Board",
+				"name": "Admin Kanban",
+				"owner": "Administrator",
+				"kanban_board_name": "Admin Kanban",
+				"reference_doctype": "ToDo",
+				"field_name": "status",
+				"private": 0,
 				"show_labels": 0,
 				"columns": [
 					{

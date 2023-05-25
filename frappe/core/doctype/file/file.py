@@ -329,7 +329,11 @@ class File(Document):
 					self.file_url = duplicate_file.file_url
 
 	def set_file_name(self):
-		if not self.file_name and self.file_url:
+		if not self.file_name and not self.file_url:
+			frappe.throw(
+				_("Fields `file_name` or `file_url` must be set for File"), exc=frappe.MandatoryError
+			)
+		elif not self.file_name and self.file_url:
 			self.file_name = self.file_url.split("/")[-1]
 		else:
 			self.file_name = re.sub(r"/", "", self.file_name)
@@ -634,7 +638,9 @@ class File(Document):
 
 	def create_attachment_record(self):
 		icon = ' <i class="fa fa-lock text-warning"></i>' if self.is_private else ""
-		file_url = quote(frappe.safe_encode(self.file_url)) if self.file_url else self.file_name
+		file_url = (
+			quote(frappe.safe_encode(self.file_url), safe="/:") if self.file_url else self.file_name
+		)
 		file_name = self.file_name or self.file_url
 
 		self.add_comment_in_reference_doc(

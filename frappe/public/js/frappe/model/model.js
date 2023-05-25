@@ -112,9 +112,14 @@ $.extend(frappe.model, {
 		{ fieldname: "name", fieldtype: "Link", label: __("ID") },
 		{ fieldname: "owner", fieldtype: "Link", label: __("Created By"), options: "User" },
 		{ fieldname: "idx", fieldtype: "Int", label: __("Index") },
-		{ fieldname: "creation", fieldtype: "Date", label: __("Created On") },
-		{ fieldname: "modified", fieldtype: "Date", label: __("Last Updated On") },
-		{ fieldname: "modified_by", fieldtype: "Data", label: __("Last Updated By") },
+		{ fieldname: "creation", fieldtype: "Datetime", label: __("Created On") },
+		{ fieldname: "modified", fieldtype: "Datetime", label: __("Last Updated On") },
+		{
+			fieldname: "modified_by",
+			fieldtype: "Link",
+			label: __("Last Updated By"),
+			options: "User",
+		},
 		{ fieldname: "_user_tags", fieldtype: "Data", label: __("Tags") },
 		{ fieldname: "_liked_by", fieldtype: "Data", label: __("Liked By") },
 		{ fieldname: "_comments", fieldtype: "Text", label: __("Comments") },
@@ -144,9 +149,13 @@ $.extend(frappe.model, {
 					cur_frm.doc.doctype === doc.doctype &&
 					cur_frm.doc.name === doc.name
 				) {
-					if (!frappe.ui.form.is_saving && data.modified != cur_frm.doc.modified) {
-						doc.__needs_refresh = true;
-						cur_frm.show_conflict_message();
+					if (data.modified !== cur_frm.doc.modified) {
+						if (!cur_frm.is_dirty()) {
+							cur_frm.reload_doc();
+						} else if (!frappe.ui.form.is_saving) {
+							doc.__needs_refresh = true;
+							cur_frm.show_conflict_message();
+						}
 					}
 				} else {
 					if (!doc.__unsaved) {
@@ -269,21 +278,18 @@ $.extend(frappe.model, {
 
 	init_doctype: function (doctype) {
 		var meta = locals.DocType[doctype];
-		if (meta.__list_js) {
-			eval(meta.__list_js);
+		for (const asset_key of [
+			"__list_js",
+			"__custom_list_js",
+			"__calendar_js",
+			"__map_js",
+			"__tree_js",
+		]) {
+			if (meta[asset_key]) {
+				new Function(meta[asset_key])();
+			}
 		}
-		if (meta.__custom_list_js) {
-			eval(meta.__custom_list_js);
-		}
-		if (meta.__calendar_js) {
-			eval(meta.__calendar_js);
-		}
-		if (meta.__map_js) {
-			eval(meta.__map_js);
-		}
-		if (meta.__tree_js) {
-			eval(meta.__tree_js);
-		}
+
 		if (meta.__templates) {
 			$.extend(frappe.templates, meta.__templates);
 		}
@@ -342,11 +348,9 @@ $.extend(frappe.model, {
 	},
 
 	unscrub: function (txt) {
-		return __(txt || "")
-			.replace(/-|_/g, " ")
-			.replace(/\w*/g, function (keywords) {
-				return keywords.charAt(0).toUpperCase() + keywords.substr(1).toLowerCase();
-			});
+		return (txt || "").replace(/-|_/g, " ").replace(/\w*/g, function (keywords) {
+			return keywords.charAt(0).toUpperCase() + keywords.substr(1).toLowerCase();
+		});
 	},
 
 	can_create: function (doctype) {
@@ -441,18 +445,16 @@ $.extend(frappe.model, {
 	},
 
 	can_share: function (doctype, frm) {
+		let disable_sharing = cint(frappe.sys_defaults.disable_document_sharing);
+
+		if (disable_sharing && frappe.session.user !== "Administrator") {
+			return false;
+		}
+
 		if (frm) {
 			return frm.perm[0].share === 1;
 		}
 		return frappe.boot.user.can_share.indexOf(doctype) !== -1;
-	},
-
-	can_set_user_permissions: function (doctype, frm) {
-		// system manager can always set user permissions
-		if (frappe.user_roles.includes("System Manager")) return true;
-
-		if (frm) return frm.perm[0].set_user_permissions === 1;
-		return frappe.boot.user.can_set_user_permissions.indexOf(doctype) !== -1;
 	},
 
 	has_value: function (dt, dn, fn) {
@@ -789,7 +791,7 @@ $.extend(frappe.model, {
 	get_all_docs: function (doc) {
 		var all = [doc];
 		for (var key in doc) {
-			if ($.isArray(doc[key])) {
+			if ($.isArray(doc[key]) && !key.startsWith("_")) {
 				var children = doc[key];
 				for (var i = 0, l = children.length; i < l; i++) {
 					all.push(children[i]);
